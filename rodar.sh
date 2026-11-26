@@ -10,9 +10,9 @@ if [ "$codigo" != "207" ]; then
 fi
 echo "Receita respondeu. Instalando o que falta..."
 pip3 install --user -q google-cloud-bigquery
-export DESTINO=bigquery RECORTE="${RECORTE:-brasil-ativos}" BQ_PROJECT="${BQ_PROJECT:-genuine-ether-464218-q6}"
+VARS="DESTINO=bigquery RECORTE=${RECORTE:-brasil-ativos} BQ_PROJECT=${BQ_PROJECT:-genuine-ether-464218-q6}"
 tmux kill-session -t carga 2>/dev/null
-tmux new -d -s carga "python3 carregar_cnpj.py 2>&1 | tee $HOME/carga-cnpj.log"
+tmux new -d -s carga "cd $PWD && env $VARS python3 carregar_cnpj.py 2>&1 | tee $HOME/carga-cnpj.log"
 echo "Carga iniciada (leva cerca de 1 a 2 horas). Deixe esta aba aberta."
 sleep 3
 tail -f $HOME/carga-cnpj.log
