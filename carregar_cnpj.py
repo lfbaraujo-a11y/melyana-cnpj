@@ -19,19 +19,21 @@ Variáveis de ambiente
   DRY_RUN       1 = só baixa, filtra e conta; não grava no banco
   ZIPS_LOCAIS   pasta com .zip já baixados (para teste)
 """
+import base64
 import csv
 import io
 import os
 import re
 import sys
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 
-BASES = [
-    "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/",
-    "https://dadosabertos.rfb.gov.br/CNPJ/dados_abertos_cnpj/",
-]
+# Desde 2026 a Receita publica num compartilhamento público do SERPRO+ (Nextcloud).
+# Lista e baixa pela interface WebDAV pública do compartilhamento.
+RF_SHARE = os.environ.get("RF_SHARE", "gn672Ad4CF8N6TK")
+RF_DAV = os.environ.get("RF_DAV", "https://arquivos.receitafederal.gov.br/public.php/webdav/Dados/Cadastros/CNPJ/")
 AQUI = os.path.dirname(os.path.abspath(__file__))
 TMP = os.environ.get("RUNNER_TEMP") or "/tmp"
 SCHEMA = "receita"
@@ -76,34 +78,41 @@ def config():
 
 
 # ------------------------------------------------------------------ download
-def abrir(url, headers=None, timeout=120):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 carregar-cnpj"})
+def abrir(url, headers=None, timeout=120, metodo="GET"):
+    req = urllib.request.Request(url, method=metodo, headers={"User-Agent": "Mozilla/5.0 carregar-cnpj"})
+    if "/public.php/webdav" in url:
+        req.add_header("Authorization", "Basic " + base64.b64encode(f"{RF_SHARE}:".encode()).decode())
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     return urllib.request.urlopen(req, timeout=timeout)
+
+
+def listar(url):
+    """Nomes (arquivos e pastas) dentro de uma pasta do WebDAV."""
+    with abrir(url, {"Depth": "1"}, timeout=120, metodo="PROPFIND") as r:
+        xml = r.read().decode("utf-8", "ignore")
+    nomes = [urllib.parse.unquote(h).rstrip("/").split("/")[-1] for h in re.findall(r"<d:href>([^<]+)</d:href>", xml)]
+    return [n for n in nomes[1:] if n]
 
 
 def pasta_do_mes():
     if os.environ.get("URL_MES"):
         return os.environ["URL_MES"].rstrip("/") + "/"
     mes = os.environ.get("MES", "").strip()
-    erros = []
-    for base in BASES:
+    for t in range(1, 6):
         try:
-            html = abrir(base, timeout=60).read().decode("utf-8", "ignore")
+            meses = sorted(n for n in listar(RF_DAV) if re.fullmatch(r"\d{4}-\d{2}", n))
+            break
         except Exception as e:  # noqa
-            erros.append(f"{base}: {e}")
-            continue
-        meses = sorted(set(re.findall(r'href="(\d{4}-\d{2})/?"', html)))
-        if meses:
-            return base + (mes if mes in meses else meses[-1]) + "/"
-        erros.append(f"{base}: nenhuma pasta AAAA-MM")
-    raise SystemExit("Não achei a pasta dos dados abertos:\n  " + "\n  ".join(erros))
+            log(f"   não consegui listar {RF_DAV} ({e}); tentativa {t}/5")
+            time.sleep(20 * t)
+    else:
+        raise SystemExit("Não achei a pasta dos dados abertos da Receita.")
+    return RF_DAV + (mes if mes in meses else meses[-1]) + "/"
 
 
 def arquivos_do_mes(url_mes):
-    html = abrir(url_mes, timeout=60).read().decode("utf-8", "ignore")
-    return sorted(set(re.findall(r'href="([A-Za-z]+\d*\.zip)"', html)))
+    return sorted(n for n in listar(url_mes) if n.lower().endswith(".zip"))
 
 
 def baixar(url, destino, tentativas=8):
