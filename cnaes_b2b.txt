@@ -1,0 +1,31 @@
+# CNAEs do recorte B2B (um por linha: codigo;nicho;descricao). Edite à vontade.
+5510801;Hospedagem;Hotéis
+5510802;Hospedagem;Apart-hotéis
+5590601;Hospedagem;Albergues, exceto assistenciais
+5590603;Hospedagem;Pensões (alojamento)
+5590699;Hospedagem;Outros alojamentos (pousadas etc.)
+5611201;Restaurantes e bares;Restaurantes e similares
+5611203;Restaurantes e bares;Lanchonetes, casas de chá, de sucos e similares
+5611204;Restaurantes e bares;Bares sem entretenimento
+5611205;Restaurantes e bares;Bares com entretenimento
+5620102;Restaurantes e bares;Bufê para eventos e recepções
+6810202;Imobiliárias e temporada;Aluguel de imóveis próprios
+6821802;Imobiliárias e temporada;Corretagem no aluguel de imóveis
+6822600;Imobiliárias e temporada;Gestão e administração da propriedade imobiliária
+7410202;Decoração e móveis;Design de interiores
+4754701;Decoração e móveis;Lojas de móveis
+4755503;Decoração e móveis;Cama, mesa e banho
+4759801;Decoração e móveis;Iluminação
+4759899;Decoração e móveis;Outros artigos de uso doméstico
+4789001;Decoração e móveis;Suvenires, bijuterias e artesanatos
+4789002;Decoração e móveis;Floristas (plantas, flores naturais)
+8130300;Decoração e móveis;Paisagismo
+7111100;Decoração e móveis;Arquitetura
+8230001;Eventos;Organização de feiras, congressos e festas
+8230002;Eventos;Casas de festas e eventos
+7319001;Eventos;Criação de estandes
+4110700;Construção e incorporação;Incorporação de empreendimentos imobiliários
+4120400;Construção e incorporação;Construção de edifícios
+3101200;Construção e incorporação;Fabricação de móveis com predominância de madeira
+9602502;Estética e condomínios;Estética e outros cuidados com a beleza
+8112500;Estética e condomínios;Condomínios prediais
