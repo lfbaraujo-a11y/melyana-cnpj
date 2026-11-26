@@ -428,7 +428,7 @@ def main():
             log(f"{tabela}: {n}")
 
     # estabelecimentos (decidem quais empresas entram)
-    basicos = set()
+    basicos = bytearray(12_500_000)  # 1 bit por CNPJ básico (8 dígitos): 12,5 MB em vez de GBs num set
     ufs, cnaes, ativos, todas = c["ufs"], c["cnae_set"], c["ativos"], c["colunas"] == "todas"
     filtra_basico = bool(ufs or cnaes or ativos)
 
@@ -442,8 +442,9 @@ def main():
                 continue
             if cnaes and r[11] not in cnaes and not (cnaes & set(r[12].split(","))):
                 continue
-            if filtra_basico:
-                basicos.add(r[0])
+            if filtra_basico and r[0].isdigit():
+                n = int(r[0])
+                basicos[n >> 3] |= 1 << (n & 7)
             log_c = (" ".join(x for x in (r[13], r[14]) if x)).strip()
             if todas:
                 yield [r[0] + r[1] + r[2], r[0], inteiro(r[3]), nulo(r[4]), inteiro(r[5]), data(r[6]),
@@ -471,7 +472,12 @@ def main():
         log(f"estabelecimento: +{n} (total {db.cont['estabelecimento']})")
 
     def do_recorte(r):
-        return not filtra_basico or r[0] in basicos
+        if not filtra_basico:
+            return True
+        if not r[0].isdigit():
+            return False
+        n = int(r[0])
+        return bool(basicos[n >> 3] & (1 << (n & 7)))
 
     for nome in fonte.grupo("Empresas"):
         n = db.copiar("empresa", ["cnpj_basico", "razao_social", "natureza_juridica",
