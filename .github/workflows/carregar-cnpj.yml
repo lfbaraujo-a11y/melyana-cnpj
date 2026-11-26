@@ -1,0 +1,44 @@
+name: Carregar CNPJ da Receita
+
+on:
+  workflow_dispatch:
+    inputs:
+      destino:
+        description: "bigquery | supabase"
+        default: "bigquery"
+      recorte:
+        description: "completa | brasil-ativos | sudeste-b2b | rj"
+        default: "brasil-ativos"
+      mes:
+        description: "AAAA-MM (vazio = mais recente)"
+        default: ""
+      dry_run:
+        description: "1 = só conta, não grava"
+        default: "0"
+  schedule:
+    - cron: "0 9 20 * *"   # todo dia 20, 6h de Brasília
+
+jobs:
+  carregar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      DESTINO: ${{ inputs.destino || vars.DESTINO || 'bigquery' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "psycopg[binary]" google-cloud-bigquery
+      - if: env.DESTINO == 'bigquery' && inputs.dry_run != '1'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - name: Baixar, filtrar e carregar (cada .zip é apagado depois de lido)
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+          BQ_PROJECT: ${{ vars.BQ_PROJECT || 'genuine-ether-464218-q6' }}
+          RECORTE: ${{ inputs.recorte || vars.RECORTE || 'brasil-ativos' }}
+          MES: ${{ inputs.mes }}
+          DRY_RUN: ${{ inputs.dry_run || '0' }}
+        run: python carregar_cnpj.py
