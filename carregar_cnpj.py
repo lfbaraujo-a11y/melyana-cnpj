@@ -18,6 +18,8 @@ Variáveis de ambiente
   URL_MES       endereço da pasta do mês, se a Receita mudar o site
   DRY_RUN       1 = só baixa, filtra e conta; não grava no banco
   ZIPS_LOCAIS   pasta com .zip já baixados (para teste)
+  RETOMAR       1 = continua uma carga interrompida (BigQuery): não apaga o dataset e pula
+                os arquivos já gravados (lista em PROGRESSO e no log LOG_ANTERIOR)
 """
 import base64
 import csv
@@ -37,6 +39,9 @@ RF_DAV = os.environ.get("RF_DAV", "https://arquivos.receitafederal.gov.br/public
 AQUI = os.path.dirname(os.path.abspath(__file__))
 TMP = os.environ.get("RUNNER_TEMP") or "/tmp"
 SCHEMA = "receita"
+RETOMAR = os.environ.get("RETOMAR", "") == "1"
+PROGRESSO = os.path.expanduser(os.environ.get("PROGRESSO", "~/carga-cnpj.feito"))
+LOG_ANTERIOR = os.path.expanduser(os.environ.get("LOG_ANTERIOR", "~/carga-cnpj.log"))
 
 RECORTES = {
     "sudeste-b2b":   dict(ufs={"RJ", "SP", "MG", "ES"}, cnaes="b2b",   ativos=True,  socios=True,  colunas="essenciais"),
@@ -352,9 +357,29 @@ class BigQuery:
             return
         ds = self.bq.Dataset(self.ref)
         ds.location = os.environ.get("BQ_LOCATION", "southamerica-east1")
+        if RETOMAR:
+            log(f"Retomando: mantendo o dataset {self.ref}")
+            return
         self.cli.delete_dataset(self.ref, delete_contents=True, not_found_ok=True)
         self.cli.create_dataset(ds)
         log(f"Dataset {self.ref} recriado")
+
+    def linhas_na_tabela(self, tabela):
+        try:
+            return self.cli.get_table(f"{self.ref}.{tabela}").num_rows or 0
+        except Exception:
+            return 0
+
+    def basicos_carregados(self):
+        """CNPJs básicos já gravados em estabelecimento (para refazer o filtro na retomada)."""
+        q = f"select distinct cnpj_basico from `{self.ref}.estabelecimento`"
+        job = self.cli.query(q)
+        try:
+            tab = job.result().to_arrow(create_bqstorage_client=True)
+            return tab.column(0).to_pylist()
+        except Exception as e:
+            log(f"   leitura rápida indisponível ({e}); lendo pela API comum")
+            return (r[0] for r in job.result(page_size=100_000))
 
     def copiar(self, tabela, colunas, linhas):
         import gzip
@@ -408,6 +433,52 @@ def capital(v):
         return None
 
 
+# ------------------------------------------------------------------ retomada
+def marcar_feito(nome):
+    with open(PROGRESSO, "a") as f:
+        f.write(nome + "\n")
+
+
+def ja_feitos(db, fonte):
+    """Arquivos que já estão no destino: lista PROGRESSO + log da carga anterior,
+    conferidos com o número de linhas de cada tabela no BigQuery."""
+    feito, soma = set(), {}
+    if os.path.exists(PROGRESSO):
+        feito |= set(open(PROGRESSO).read().split())
+    if os.path.exists(LOG_ANTERIOR):
+        atual = None
+        for linha in open(LOG_ANTERIOR, encoding="utf-8", errors="replace"):
+            m = re.search(r"Baixando (\S+\.zip)", linha)
+            if m:
+                atual = m.group(1)
+                continue
+            m = re.search(r" (cnae|municipio|natureza|qualificacao|motivo): \d+", linha)
+            if m and atual:
+                feito.add(atual)
+                continue
+            m = re.search(r" (estabelecimento|empresa|simples|socio): \+(\d+)", linha)
+            if m and atual and atual not in soma.get("_arq", set()):
+                feito.add(atual)
+                soma[m.group(1)] = soma.get(m.group(1), 0) + int(m.group(2))
+                soma.setdefault("_arq", set()).add(atual)
+    for tabela, prefixo in [("estabelecimento", "Estabelecimentos"), ("empresa", "Empresas"),
+                            ("simples", "Simples"), ("socio", "Socios")]:
+        n_bq = db.linhas_na_tabela(tabela)
+        esperado = soma.get(tabela, 0)
+        pend = [f for f in fonte.grupo(prefixo) if f not in feito]
+        if n_bq > esperado and pend:
+            log(f"   {pend[0]} já estava gravado (BigQuery tem {n_bq}, log dizia {esperado})")
+            feito.add(pend[0])
+        elif n_bq < esperado:
+            raise SystemExit(f"{tabela}: BigQuery tem {n_bq} linhas e o log diz {esperado}. Avise o Claude.")
+        if n_bq:
+            db.cont[tabela] = n_bq
+    for f in sorted(feito):
+        marcar_feito(f)
+    log(f"Retomada: {len(feito)} arquivos já gravados; contagens atuais {db.cont}")
+    return feito
+
+
 # ------------------------------------------------------------------ principal
 def main():
     c = config()
@@ -418,14 +489,24 @@ def main():
     destino = os.environ.get("DESTINO", "supabase").strip().lower()
     db = BigQuery(c["dry"]) if destino == "bigquery" else Banco(c["dry"])
     db.inicio(c)
+    retomar = RETOMAR and destino == "bigquery" and not c["dry"]
+    if retomar:
+        feito = ja_feitos(db, fonte)
+    else:
+        feito = set()
+        if os.path.exists(PROGRESSO):
+            os.remove(PROGRESSO)
 
     # tabelas de domínio
     for prefixo, tabela in [("Cnaes", "cnae"), ("Municipios", "municipio"), ("Naturezas", "natureza"),
                             ("Qualificacoes", "qualificacao"), ("Motivos", "motivo")]:
         for nome in fonte.grupo(prefixo):
+            if nome in feito:
+                continue
             n = db.copiar(tabela, ["codigo", "descricao"],
                           ([r[0], r[1]] for r in fonte.linhas(nome) if len(r) >= 2))
             log(f"{tabela}: {n}")
+            marcar_feito(nome)
 
     # estabelecimentos (decidem quais empresas entram)
     basicos = bytearray(12_500_000)  # 1 bit por CNPJ básico (8 dígitos): 12,5 MB em vez de GBs num set
@@ -467,9 +548,21 @@ def main():
                "data_inicio", "cnae_principal", "cnae_secundaria", "logradouro", "numero",
                "complemento", "bairro", "cep", "uf", "municipio", "ddd1", "telefone1", "ddd2",
                "telefone2", "email"])
+    if retomar and filtra_basico and any(f in feito for f in fonte.grupo("Estabelecimentos")):
+        log("Refazendo o filtro com os CNPJs já gravados (alguns minutos)...")
+        k = 0
+        for b in db.basicos_carregados():
+            if b and b.isdigit():
+                n = int(b)
+                basicos[n >> 3] |= 1 << (n & 7)
+                k += 1
+        log(f"   {k} CNPJs básicos")
     for nome in fonte.grupo("Estabelecimentos"):
+        if nome in feito:
+            continue
         n = db.copiar("estabelecimento", cols_e, estab(fonte.linhas(nome)))
         log(f"estabelecimento: +{n} (total {db.cont['estabelecimento']})")
+        marcar_feito(nome)
 
     def do_recorte(r):
         if not filtra_basico:
@@ -480,27 +573,36 @@ def main():
         return bool(basicos[n >> 3] & (1 << (n & 7)))
 
     for nome in fonte.grupo("Empresas"):
+        if nome in feito:
+            continue
         n = db.copiar("empresa", ["cnpj_basico", "razao_social", "natureza_juridica",
                                   "qualificacao_responsavel", "capital_social", "porte", "ente_federativo"],
                       ([r[0], nulo(r[1]), nulo(r[2]), nulo(r[3]), capital(r[4]), nulo(r[5]), nulo(r[6])]
                        for r in fonte.linhas(nome) if len(r) >= 7 and do_recorte(r)))
         log(f"empresa: +{n}")
+        marcar_feito(nome)
 
     for nome in fonte.grupo("Simples"):
+        if nome in feito:
+            continue
         n = db.copiar("simples", ["cnpj_basico", "opcao_simples", "data_opcao_simples",
                                   "data_exclusao_simples", "opcao_mei", "data_opcao_mei", "data_exclusao_mei"],
                       ([r[0], nulo(r[1]), data(r[2]), data(r[3]), nulo(r[4]), data(r[5]), data(r[6])]
                        for r in fonte.linhas(nome) if len(r) >= 7 and do_recorte(r)))
         log(f"simples: +{n}")
+        marcar_feito(nome)
 
     if c["socios"]:
         # sem CPF/CNPJ do sócio nem representante: só nome, qualificação e entrada
         for nome in fonte.grupo("Socios"):
+            if nome in feito:
+                continue
             n = db.copiar("socio", ["cnpj_basico", "identificador", "nome", "qualificacao",
                                     "data_entrada", "faixa_etaria"],
                           ([r[0], inteiro(r[1]), nulo(r[2]), nulo(r[4]), data(r[5]), nulo(r[10])]
                            for r in fonte.linhas(nome) if len(r) >= 11 and do_recorte(r)))
             log(f"socio: +{n}")
+            marcar_feito(nome)
 
     db.fim(c, fonte.mes)
     log(f"Pronto: {db.cont}")
